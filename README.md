@@ -11,7 +11,7 @@ Backups can be managed, checked, and restored manually, without Python if needed
   can be cloned with `git clone https://github.com/GallowayLabMIT/cold_backups.git`
 - [ ] Initialize the pair of drives:
     - Locate the path to the drive to be paired. On Windows this path probably looks like `H:\`
-    - Decide and document a base name for these drives. If you set a base name of "apple", the generated names will be "apple-1" and "apple-2"
+    - Decide and document a base name for these drives. If you set a base name of "apple", the generated names will be "apple_1" and "apple_2"
     - Run `python -m backup_helper --paired-root "PATH_TO_ROOT" init --base-name "BASE_NAME"`
 
 ## Adding new items checklist

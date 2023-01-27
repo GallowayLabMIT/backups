@@ -11,12 +11,12 @@ Backups can be managed, checked, and restored manually, without Python if needed
   can be cloned with `git clone https://github.com/GallowayLabMIT/cold_backups.git`
 - [ ] Initialize the pair of drives:
     - Locate the path to the drive to be paired. On Windows this path probably looks like `H:\`
-    - Decide and document a base name for these drives
-    - Run `python -m backup_helper --paired-root "PATH_TO_ROOT" init --base-name "PAIR_NAME"`
+    - Decide and document a base name for these drives. If you set a base name of "apple", the generated names will be "apple-1" and "apple-2"
+    - Run `python -m backup_helper --paired-root "PATH_TO_ROOT" init --base-name "BASE_NAME"`
 
 ## Adding new items checklist
 - [ ] Copy new items into the `data` subfolder on *both* drives.
-- [ ] Run `python -m backup_helper --paired-root "PATH_TO_ROOT list"`, and confirm that your new files are listed.
+- [ ] Run `python -m backup_helper --paired-root "PATH_TO_ROOT" list`, and confirm that your new files are listed.
 - [ ] Decide on the amount of recovery data you want for each new file. A good default is 5%, from which you would write `--parity-percent 5`
   Then, for each new file run `python -m backup_helper --paired-root "PATH_TO_ROOT" add --parity-percent N data/path/to/file`
 - [ ] Run `python -m backup_helper --paired-root "PATH_TO_ROOT list"` again once finished to check.

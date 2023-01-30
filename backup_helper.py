@@ -207,9 +207,10 @@ def init_paired_backups(root: Path, name: str, backup_set: List[str]) -> None:
     # Write an empty manifest 
     save_manifest(root, DataManifest(VERSION, name, backup_set, {}))
 
-def add_file(root: Path, manifest: DataManifest, file: Path, *, parity_percent: int, reuse_parity: bool = False) -> None:
+def add_file(root: Path, manifest: DataManifest, file: Path, *, parity_percent: int, reuse_parity: bool = False, start_block: int = 0) -> int:
     """
-    Adds a file to the (single) linked manifest, and uses Par2 to compute parity information
+    Adds a file to the (single) linked manifest, and uses Par2 to compute parity information.
+    Returns next block needed with parity file.
     """
     # Get the root-relative path
     try:
@@ -230,10 +231,19 @@ def add_file(root: Path, manifest: DataManifest, file: Path, *, parity_percent: 
                 "Something weird is happening! Use --reuse-parity to reuse parity data if this is intentional")
     else:
         # Launch par2
-        launch_args = [str(locate_par2()), 'create', f'-r{parity_percent}', str(file.name)]
+        launch_args = [str(locate_par2()), 'create', f'-r{parity_percent}', f'-f{start_block}', str(file.name)]
         wd = file.parent
         print(f'Running `{" ".join(launch_args)}` in directory {str(wd)}')
         subprocess.run(launch_args, check=True, cwd=wd)
+    
+    next_block = 0
+    for file in (root / rel_file).parent.glob(f'{rel_file.name}.vol*.par2'):
+        match = re.match(r".*\.vol(\d+)\+(\d+).par2", file.name)
+        if match is None:
+            continue
+        possible_next_block = int(match.group(1)) + int(match.group(2))
+        if possible_next_block > next_block:
+            next_block = possible_next_block
 
     # Update the manifest
     if rel_file in manifest.files and manifest.files[rel_file] != filehash:
@@ -242,6 +252,7 @@ def add_file(root: Path, manifest: DataManifest, file: Path, *, parity_percent: 
                 f"Actual hash: {filehash}"
         )
     manifest.files[rel_file] = filehash
+    return next_block
 
 def verify_file(root: Path, manifest: DataManifest, file: Path) -> bool:
     """
@@ -400,12 +411,13 @@ if __name__ == '__main__':
                     'you fix it.')
 
             # Check that the passed path is a relative path and exists on all drives.
+            next_block = 0
             for root, manifest in drive_roots:
-                if not (root / args.file).exists():
+                if not (root / args.file).exists() or not (root / args.file).is_file():
                     raise RuntimeError(f"File to add ({str(args.file)}) does not exist on drive {manifest.name} ({root})!\n"
                         "Are you sure you specified a drive-relative path? It should look like `data/foo.zip` without leading entries.")
             
-                add_file(root, manifest, root / args.file, parity_percent=args.parity_percent, reuse_parity=args.reuse_parity)
+                next_block = add_file(root, manifest, root / args.file, parity_percent=args.parity_percent, reuse_parity=args.reuse_parity, start_block=next_block)
             
             # Check that all files share the same hash
             file_hashes: set[str] = set()

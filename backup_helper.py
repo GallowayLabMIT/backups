@@ -33,8 +33,8 @@ class JSONDataManifest:
     Stores the raw loaded manifest data
     """
     version: str
-    repo_name: str
-    pair_name: str
+    name: str
+    backup_set: List[str]
     files: dict[str, str]
 
 @dataclass
@@ -46,8 +46,8 @@ class DataManifest:
     # This doesn't handle the edge cases with weird version number (1.2.3pre-alpha-1234),
     # but is the most resilient far into the future
     version: Tuple[int, int, int]
-    repo_name: str
-    pair_name: str
+    name: str
+    backup_set: List[str]
     files: dict[Path, str]
 
 @dataclass
@@ -144,8 +144,8 @@ def load_manifest(root: Path) -> Optional[DataManifest]:
             raw_manifest = JSONDataManifest(**json.load(file))
         manifest = DataManifest(
             version=tuple(map(int, (raw_manifest.version.split('.')))),
-            repo_name=raw_manifest.repo_name,
-            pair_name=raw_manifest.pair_name,
+            name=raw_manifest.name,
+            backup_set=raw_manifest.backup_set,
             files={Path(k): v for k,v in raw_manifest.files.items()}
         )
 
@@ -164,36 +164,37 @@ def save_manifest(root: Path, manifest: DataManifest) -> None:
     """
     towrite = JSONDataManifest(
         version=version_string(manifest.version),
-        repo_name=manifest.repo_name,
-        pair_name=manifest.pair_name,
+        name=manifest.name,
+        backup_set=manifest.backup_set,
         files={str(k): v for k,v in manifest.files.items()}
     )
     with (root / 'manifest.json').open('w') as f:
         json.dump(asdict(towrite), f, indent=2, sort_keys=True)
 
-def locate_par2(root: Path) -> Path:
+def locate_par2() -> Path:
     """
     Locates the par2 executable, either globally installed
     or located within the repo (inside `bin`).
     """
+    repo_dir = Path(__file__).parent
     par2_in_path = shutil.which('par2')
     par2 = Path(par2_in_path) if par2_in_path is not None else None
     if par2 is None:
         # Try to locate within the bin path if on Windows
         if sys.platform == 'win32':
-            winpath = root / 'bin' / 'par2.exe'
+            winpath = repo_dir / 'bin' / 'par2.exe'
             if winpath.exists():
                 par2 = winpath
     # Exit if par2 is still none
     if par2 is None:
         raise RuntimeError("Could not locate the par2 executable! "
-            "Check that you are in the root of a backup drive and "
+            "Check that the cold_backups repo was cloned properly (Windows) or "
             "have par2 installed (if not on Windows)"
         )
     return par2
 
 # ------ Subfunction implementation functions --------
-def init_paired_backups(root: Path, name: str, paired_name: str) -> None:
+def init_paired_backups(root: Path, name: str, backup_set: List[str]) -> None:
     """
     Initializes the paired backup system, given a root path, name, and paired name.
     """
@@ -204,9 +205,9 @@ def init_paired_backups(root: Path, name: str, paired_name: str) -> None:
     if not (root / 'data').exists():
         (root / 'data').mkdir()
     # Write an empty manifest 
-    save_manifest(root, DataManifest(VERSION, name, paired_name, {}))
+    save_manifest(root, DataManifest(VERSION, name, backup_set, {}))
 
-def add_file(root: Path, manifest: DataManifest, file: Path, parity_percent: int) -> None:
+def add_file(root: Path, manifest: DataManifest, file: Path, *, parity_percent: int, reuse_parity: bool = False) -> None:
     """
     Adds a file to the (single) linked manifest, and uses Par2 to compute parity information
     """
@@ -215,20 +216,28 @@ def add_file(root: Path, manifest: DataManifest, file: Path, parity_percent: int
         rel_file = file.resolve().relative_to(root)
     except ValueError:
         raise RuntimeError(f"Requested file {str(file)} is not within the current backup drive root!")
+    
+    if rel_file in manifest.files:
+        raise RuntimeError(f"Requested file {str(file)} is already on drive {manifest.name}")
+    
     # Hash the file first:
-    print(f'Computing hash for {str(rel_file)}:')
+    print(f'[{manifest.name}] Computing hash for {str(rel_file)}:')
     filehash = hash_file_with_progress(file)
 
-    # Launch par2
-    launch_args = [str(locate_par2(root)), 'create', f'-r{parity_percent}', str(file.name)]
-    wd = file.parent
-    print(f'Running `{" ".join(launch_args)}` in directory {str(wd)}')
-    subprocess.run(launch_args, check=True, cwd=wd)
+    if (root / rel_file.with_name(rel_file.name + '.par2')).exists():
+        if not reuse_parity:
+            raise RuntimeError(f"Requested file {str(file)} already has parity data! "
+                "Something weird is happening! Use --reuse-parity to reuse parity data if this is intentional")
+    else:
+        # Launch par2
+        launch_args = [str(locate_par2()), 'create', f'-r{parity_percent}', str(file.name)]
+        wd = file.parent
+        print(f'Running `{" ".join(launch_args)}` in directory {str(wd)}')
+        subprocess.run(launch_args, check=True, cwd=wd)
 
     # Update the manifest
     if rel_file in manifest.files and manifest.files[rel_file] != filehash:
-        raise RuntimeError(f"File hash mismatch when adding file! File {str(file)} "
-                "likely differs between paired hard drives.\n"
+        raise RuntimeError(f"File hash mismatch when adding file! For file {str(file)}\n"
                 f"Expected hash: {manifest.files[rel_file]}\n"
                 f"Actual hash: {filehash}"
         )
@@ -248,7 +257,7 @@ def verify_file(root: Path, manifest: DataManifest, file: Path) -> bool:
         print(f'File {str(rel_file)} is missing hash information!')
         return False
     # Hash the file first:
-    print(f'Computing hash for {str(rel_file)}:')
+    print(f'[{manifest.name}] Computing hash for {str(rel_file)}:')
     filehash = hash_file_with_progress(file)
     bad = False
     if filehash != manifest.files[rel_file]:
@@ -256,15 +265,17 @@ def verify_file(root: Path, manifest: DataManifest, file: Path) -> bool:
         bad = True
 
     # Launch par2
-    launch_args = [str(locate_par2(root)), 'verify', file.name + '.par2']
+    launch_args = [str(locate_par2()), 'verify', file.name + '.par2']
     wd = file.parent
-    print(f'Running `{" ".join(launch_args)}` in directory {str(wd)}')
+    print(f'Running `{" ".join(launch_args)}` in directory {str(wd)}...', end='', flush=True)
     run_result = subprocess.run(launch_args, check=False, cwd=wd, capture_output=True)
     if run_result.returncode != 0:
         print(run_result.stdout.decode('utf8'))
         print(run_result.stderr.decode('utf8'))
-        print(f'File {str(rel_file)} appears to be corrupted or have corrupted recovery data! See recovery instructions.')
+        print(f'\nFile {str(rel_file)} appears to be corrupted or have corrupted recovery data! See recovery instructions.')
         bad = True
+    else:
+        print('done!', flush=True)
     
     return not bad
 
@@ -295,16 +306,11 @@ def list_files(root: Path, manifest:DataManifest) -> List[FileStatus]:
             else:
                 results[rel_filename].has_file = True
     return sorted(results.values(), key=lambda v: (v.has_hash, v.has_file, v.has_par2_files, v.rel_filename))
-            
-
-
 
 parser = argparse.ArgumentParser(
     description="Handles data on pairs of PAR2-protected hard drives."
 )
-paired = parser.add_mutually_exclusive_group(required=True)
-paired.add_argument('--orphan', action='store_true')
-paired.add_argument('--paired-root')
+parser.add_argument('--root', '-r', action='append', required=True)
 
 subparsers = parser.add_subparsers(help='sub-command help', dest='subparser_type', required=True)
 init_parser = subparsers.add_parser('init', help='Initialize a pair of backup drives')
@@ -315,47 +321,62 @@ list_parser.add_argument('--all', action='store_true')
 
 add_parser = subparsers.add_parser('add', help='Adds files to the manifest, hashing it and creating parity recovery data')
 add_parser.add_argument('--parity-percent', default=5, type=int)
+add_parser.add_argument('--force', action='store_true', default=False)
+add_parser.add_argument('--reuse-parity', action='store_true', default=False)
 add_parser.add_argument('file')
 
 verify_parser = subparsers.add_parser('verify', help='Verifies all files in the manifest')
 
 if __name__ == '__main__':
-    root = Path(__file__).parent
+    repo_root = Path(__file__).parent
+    # Load all drive roots
     args = parser.parse_args()
-    paired_root = Path('.')
-    if not args.orphan:
-        paired_root = Path(args.paired_root)
 
     if args.subparser_type == 'init':
-        if args.orphan:
-            init_paired_backups(root, args.base_name, '')
-        if not args.orphan:
-            init_paired_backups(root, args.base_name + '_1', args.base_name + '_2')
-            init_paired_backups(paired_root, args.base_name + '_2', args.base_name + '_1')
+        root_names = [f'{args.base_name}_{i + 1}' for i in range(len(args.root))]
+        for root, name in zip(args.root, root_names):
+            init_paired_backups(Path(root), name, root_names)
     else:
-        # Check that the manifests are equal
-        manifest = load_manifest(root)
-        if manifest is None:
-            raise RuntimeError(f"Unable to locate manifest for drive {str(root)}!")
-        if not args.orphan:
-            paired_manifest = load_manifest(paired_root)
-            if paired_manifest is None:
-                raise RuntimeError(f"Unable to locate manifest for drive {str(paired_root)}")
-            # Check that these are the same
-            if manifest.version != paired_manifest.version:
-                raise RuntimeError("Manifest versions differ! You should compare manifests to figure out what happened (with a diff tool like git diff)")
-            if manifest.repo_name != paired_manifest.pair_name or manifest.pair_name != paired_manifest.repo_name:
-                raise RuntimeError('Manifests do not appear to be paired based on their names! You should compare the manifests to figure out what happened (with a diff tool like git diff)')
-            if manifest.files != paired_manifest.files:
-                raise RuntimeError("Manifest files do not match! You should compare the manifests to figure out what happened (with a diff tool like git diff)")
 
+        drive_roots: List[Tuple[Path, DataManifest]] = []
+        for root in args.root:
+            manifest = load_manifest(Path(root))
+            if manifest is None:
+                raise RuntimeError(f"Unable to locate manifest (manifest.json) for drive {str(root)}!")
+            drive_roots.append((Path(root).resolve(), manifest))
+        
+        # Check for manifest correctness.
+        # Check to make sure all reference the same backup set
+        if len({frozenset(pair[1].backup_set) for pair in drive_roots}) > 1:
+            raise RuntimeError(f"Backup drives do not appear to be in the same set!\n" +
+                "\n\t".join([f'{p[1].name} ({p[0]}) is in backup set {str(p[1].backup_set)}' for p in drive_roots])
+            )
+
+        # Check to make sure all drives in a backup set are present
+        present_drives = {p[1].name for p in drive_roots}
+        backup_set_drives = set(drive_roots[0][1].backup_set)
+        all_present = True
+        if {p[1].name for p in drive_roots} != set(drive_roots[0][1].backup_set):
+            all_present = False
+            print(f"WARNING: Not all backup drives present!\n\t" +
+                '\n\t'.join([
+                    f'{entry}: {"present" if entry in present_drives else "absent!"}'
+                    for entry in backup_set_drives
+            ]))
+        
+        # Check that versions are all equal
+        if len({p[1].version for p in drive_roots}) > 1:
+            raise RuntimeError("Manifest versions differ! You should compare manifests to figure out what happened (with a diff tool like git diff)")
+        # Check that files match across manifests
+        if len({tuple([(k, p[1].files[k]) for k in sorted(p[1].files.keys()) ]) for p in drive_roots}) > 1:
+            raise RuntimeError("Tracked files do not match! You should compare the manifests to figure out what happened (with a diff tool like git diff)")
+        
+        # Implement other subparsers
         if args.subparser_type == 'list':
-            to_list = [(root, manifest.repo_name, list_files(root, manifest))]
-            if not args.orphan:
-                to_list.append((paired_root, manifest.pair_name, list_files(paired_root, manifest)))
-            for list_root, root_name, file_list in to_list:
+            for root, manifest in drive_roots:
+                file_list = list_files(root, manifest)
                 valid_count = 0
-                print(f'{root_name} ({str(list_root)}) files:')
+                print(f'{manifest.name} ({str(root)}) files:')
                 for file in file_list:
                     valid = file.has_hash and file.has_par2_files and file.has_file
                     if valid:
@@ -371,36 +392,48 @@ if __name__ == '__main__':
                     print(f'{valid_count} valid tracked files not shown. Use --all to list all.')
 
         elif args.subparser_type == 'add':
-            # Compute relative path for file
-            file_relpath = Path(args.file).resolve().relative_to(root)
+            # If there isn't a force and we are missing drives, fail
+            if not args.force and not all_present:
+                raise RuntimeError('Refusing to add files when not all drives in backup set present! '
+                    'You can override this with --force but you should not unless you are EXTREMELY '
+                    'sure you know what you are doing. The manifest divergence will throw errors unless '
+                    'you fix it.')
 
-            if not args.orphan:
-                # Check that the file exists in both paths
-                if not ((root / file_relpath).exists() and (paired_root / file_relpath).exists()):
-                    raise RuntimeError("File to add does not exist on both paired drives!")
-
-            add_file(root, manifest, root / file_relpath, args.parity_percent)
-
-            if not args.orphan:
-                add_file(paired_root, manifest, paired_root / file_relpath, args.parity_percent)
+            # Check that the passed path is a relative path and exists on all drives.
+            for root, manifest in drive_roots:
+                if not (root / args.file).exists():
+                    raise RuntimeError(f"File to add ({str(args.file)}) does not exist on drive {manifest.name} ({root})!\n"
+                        "Are you sure you specified a drive-relative path? It should look like `data/foo.zip` without leading entries.")
             
-            save_manifest(root, manifest)
-            if not args.orphan:
-                pair_name = manifest.pair_name
-                manifest.pair_name = manifest.repo_name
-                manifest.repo_name = pair_name
-                save_manifest(paired_root, manifest)
+                add_file(root, manifest, root / args.file, parity_percent=args.parity_percent, reuse_parity=args.reuse_parity)
+            
+            # Check that all files share the same hash
+            file_hashes: set[str] = set()
+            for root, manifest in drive_roots:
+                if Path(args.file) not in manifest.files:
+                    raise RuntimeError(f"Something went wrong! File was not added to {manifest.name} ({root})'s manifest!")
+                file_hashes.add(manifest.files[Path(args.file)])
+            if len(file_hashes) > 1:
+                raise RuntimeError('File hashes differed across drive roots! Not saving inconsistent manifests: the manifest.json files were not updated.')
+
+            for root, manifest in drive_roots:
+                save_manifest(root, manifest)
 
         elif args.subparser_type == 'verify':
             failed = False
-            for file in manifest.files:
-                if not verify_file(root, manifest, root / file):
-                    failed = True
-                if not args.orphan:
-                    if not verify_file(paired_root, manifest, paired_root / file):
+            for root, manifest in drive_roots:
+                for file in manifest.files:
+                    if not verify_file(root, manifest, root / file):
                         failed = True
             if failed:
                 print('File verification failed!')
                 sys.exit(1)
+            else:
+                print('\n' + 
+                '=============================\n' + 
+                'Backup verification succeeded\n' + 
+                ('BUT not all drives present\n' if not all_present else '') + 
+                '=============================\n'
+                )
         else:
             raise RuntimeError('unknown subcommand')

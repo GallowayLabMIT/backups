@@ -2,40 +2,42 @@
 This script requires Python to run! It only requires standard-library packages,
 so can be run outside of a virtual environment.
 
-Backups can be managed, checked, and restored manually, without Python if needed.
+Backups can be managed, checked, and restored manually, without Python if needed. See the ending section for details.
 
 ## Nomenclature
-- The cold backup drives are stored on a pair of drives, named in pairs as `base_name_1` and `base_name_2`.
-  For example, let's say `apple_1` is plugged in and is drive `G:\` and `apple_2` is drive `H:\`
-- Whenever you run a backup helper command, you will be running it from one of these drives. Choose one,
-  it doesn't matter which. Let's say that we're launching commands from `apple_2` (the terminal is in `H:\`).
-- When running the backup helper, the `--paired-root` will be the drive that you are _not_ running the script from.
-  If we launch commands on `apple_2`/`H:\`, then every command would include `--paired-root G:\`
-- If a paired drive is not accessible, you _can_ override checks by passing `--orphan` instead of `--paired-root`. If you
-  add files to an orphaned drive, it will loudly complain next time you try to verify since the drives will have diverged.
-- The `manifest.json`, which should be present both at `G:\manifest.json` and `H:\manifest.json`, stores the information
-  the helper uses to list, add, and verify files (namely, filenames and their associated hash).
+- These backups are "cold backups", e.g. backups that are not actively plugged into a computer. Hard drives live for
+  roughly 8 years when plugged in, so cold backups can last pretty much indefinitely.
+- Even with good storage conditions, you need to regularly check for corruption coming from e.g. cosmic rays or X-rays hitting the disk.
+- This software lets you maintain **backup sets**, e.g. pairs, triplets, or larger sets of (nearly) identical drives.
+- Each **backup set** has a **base name**. For the purpose of this readme, the base name will be "apple".
+- The `cold_backups` repo should be cloned into a subfolder (probably named `cold_backups`). You run this script from inside that directory.
+- Whenever you run it, you specify drive roots for the entire backup set to work on. If you specify multiple roots,
+  then a _single_ add/list/verify command is sufficient to do the action on each drive. You don't need to repeat the add per-drive
+  if you are specifying multiple roots.
+- It is possible to run commands on less than the full backup set (e.g. run a verify on a single drive in a two-drive backup set) by only specifying
+  some of the roots, but this is not advised.
+- All backup metadata is stored in the `manifest.json` file. This is openable and examinable by a normal text editor (e.g. VS Code).
+  Data corruption may cause you to need to manually edit this file.
 
 ## Starting a new pair of drives checklist
 - [ ] Buy a pair of hard drives. It is highly recommended to buy a Conventional Magnetic Recording (CMR)-type hard drive, as opposed to [Shingled Magnetic Recording](https://en.wikipedia.org/wiki/Shingled_magnetic_recording) which has higher data density but lower rates. As of 2023, Western Digital Blue or Red drives are generally reliable; Seagate are less so. Western Digital sells both CMR and SMR drives in both the Blue and Red lineups.
-- [ ] Create a partition table. On Windows, this involves [going to "Disk Management"](https://learn.microsoft.com/en-us/windows-server/storage/disk-management/initialize-new-disks), finding the drive, right clicking and hitting "Initalize Disk", and choosing the GPT partition table type.
-- [ ] Create a hard drive partition spanning the whole drive. Use the NTFS file system.
+- [ ] Create a partition table. On Windows, this involves [going to "Disk Management"](https://learn.microsoft.com/en-us/windows-server/storage/disk-management/initialize-new-disks), finding the drive, right clicking and hitting "Initialize Disk", and choosing the GPT partition table type.
+- [ ] Create a hard drive partition spanning the whole drive. Use the NTFS file system. You can do this in the same Disk Management view.
 - [ ] Start a terminal (Powershell on Windows) and `cd` or otherwise move to the root of
   one of the backup drives.
 - [ ] Clone this repository into the root of each drive. It is a public repository so
-  can be cloned with `git clone https://github.com/GallowayLabMIT/cold_backups.git F:/`, if the drive is empty.
-- [ ] 
+  can be cloned with `git clone https://github.com/GallowayLabMIT/cold_backups.git`. This will create a subfolder called `cold_backups` with the relevant code inside.
 - [ ] Initialize the pair of drives:
-    - Locate the path to the drive to be paired. On Windows this path probably looks like `H:\`
-    - Decide and document a base name for these drives. If you set a base name of "apple", the generated names will be "apple_1" and "apple_2"
-    - Run `python -m backup_helper --paired-root "PATH_TO_ROOT" init --base-name "BASE_NAME"`
+    - Locate the path to the drive to be paired. On Windows this path probably looks like `H:\`.
+    - Decide and document a base name for these drives. If you set a base name of "apple", the generated names will be "apple_1" and "apple_2".
+    - Run `python -m backup_helper --root "PATH_TO_FIRST_DRIVE_ROOT" --root "PATH_TO_SECOND_DRIVE_ROOT" init --base-name "BASE_NAME"`
 
 ## Adding new items checklist
-- [ ] Copy new items into the `data` subfolder on *both* drives.
-- [ ] Run `python -m backup_helper --paired-root "PATH_TO_ROOT" list`, and confirm that your new files are listed.
+- [ ] Copy new items into the `data` subfolder on *all* drives in the backup set.
+- [ ] Run `python -m backup_helper --root "FIRST_DRIVE" --root "SECOND_DRIVE" list`, and confirm that your new files are listed.
 - [ ] Decide on the amount of recovery data you want for each new file. A good default is 5%, from which you would write `--parity-percent 5`
-  Then, for each new file run `python -m backup_helper --paired-root "PATH_TO_ROOT" add --parity-percent N data/path/to/file`
-- [ ] Run `python -m backup_helper --paired-root "PATH_TO_ROOT" list` again once finished to check.
+  Then, for each new file run `python -m backup_helper --root "FIRST_DRIVE" --root "SECOND_DRIVE" add --parity-percent N data/path/to/file`
+- [ ] Run `python -m backup_helper --root "FIRST_DRIVE" --root "SECOND_DRIVE" list` again once finished to check.
 
 ## Verification checklist (Yearly run)
 - [ ] Check for a newer version of [par2](https://github.com/Parchive/par2cmdline/releases),
@@ -44,8 +46,8 @@ Backups can be managed, checked, and restored manually, without Python if needed
   - Once you push, on each drive, do a `git pull` before running the various scripts.
   - The version number bump ensures that we won't accidentally use an older version of `par2`.
 - [ ] Perform the automated backup verification on each pair of drives, with
-  `python -m backup_helper --paired-root "PATH_TO_ROOT" verify`, run from the root of one of the drives.
-  `PATH_TO_ROOT` is likely something like `F:\` on Windows.
+  `python -m backup_helper --root "FIRST_DRIVE" --root "SECOND_DRIVE" verify`, run from the root of one of the drives.
+  The drive paths are likely something like `F:\` on Windows.
 - [ ] Do a manual spot-check to test manual changes. Open the `manifest.json` file and pick one of the files. Then:
   - [ ] In a terminal (Powershell), run `Get-FileHash FILE_NAME -Algorithm SHA256` and check that it matches the manifest list.
   - [ ] In a terminal (Powershell), find the path to `par2` (it should be in the bin folder) and run `path/to/par2.exe verify FILE_NAME`
